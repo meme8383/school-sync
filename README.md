@@ -1,63 +1,184 @@
-# school_sync
+# school-sync
 
-Minimal Python service that polls Gradescope and Brightspace for school assignments, diffs against local SQLite state, and upserts into a Notion database. Batches change notifications to OpenClaw.
+Syncs school assignments from Gradescope and Brightspace into a Notion database, with change detection and proactive notifications via [OpenClaw](https://openclaw.ai).
 
-## Prerequisites
+Designed to run unattended on a schedule. When assignments are added, removed, or have their due dates changed, the diff is applied to Notion and a summary is pushed to Telegram.
 
-- `gradescope-cli` authenticated (`gradescope-cli login`)
-- `gws` authenticated (`gws auth login`)
-- Notion integration with access to School Tasks database
-- Python 3.12+ (no pip dependencies — uses only stdlib + Notion REST API)
+## How it works
+
+```
+Gradescope ──(gradescopeapi)──┐
+                              ├──▶ Normalize ──▶ SQLite diff ──▶ Notion upsert
+Brightspace ──(gws calendar)──┘                                  OpenClaw notify
+```
+
+1. **Poll** — Fetches assignments from Gradescope (via the [gradescopeapi](https://github.com/nyuoss/gradescope-api) library) and Brightspace (via Google Calendar events imported through `gws`).
+2. **Normalize** — Both sources are mapped into a common `Assignment` model with a stable external ID for deduplication.
+3. **Diff** — Compares current assignments against SQLite state to detect four change types: `new`, `due_changed`, `title_changed`, `removed`.
+4. **Upsert** — Applies changes to a Notion database using idempotent queries on the `External ID` property. User-managed fields (Status, Estimate, Notes, Docs) are never overwritten.
+5. **Notify** — Batches all changes from one sync run into a single `POST /hooks/agent` call to OpenClaw, which summarizes and delivers via Telegram.
+
+## Setup
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) (package manager)
+- [gws](https://github.com/nicholasgasior/gws) authenticated (`gws auth login`)
+- Gradescope account authenticated (`gradescope-cli login` — credentials stored in `~/.gradescope_session`)
+- A Notion integration with access to your target database
+- OpenClaw with webhooks enabled (optional, for notifications)
+
+### Install
+
+```bash
+git clone https://github.com/meme8383/school-sync.git
+cd school-sync
+uv sync
+```
+
+### Configure
+
+Copy the example environment file into the package directory and fill in your values:
+
+```bash
+cp .env.example school_sync/.env
+```
+
+Required variables:
+
+| Variable | Description |
+|---|---|
+| `NOTION_API_KEY_FILE` | Path to file containing your Notion API key |
+| `NOTION_DATABASE_ID` | UUID of your Notion database |
+| `BRIGHTSPACE_CALENDAR_ID` | Google Calendar ID for your Brightspace calendar import |
+| `COURSES_JSON` | JSON array of course mappings (see `.env.example`) |
+| `OPENCLAW_TELEGRAM_TO` | Your Telegram user ID (for notifications) |
+
+### Notion database schema
+
+Your Notion database needs these properties:
+
+| Property | Type | Purpose |
+|---|---|---|
+| Name | title | Assignment title |
+| Due | date | Due date (ISO 8601 with timezone) |
+| Course | multi_select | Course label (e.g. "ECE 50863") |
+| External ID | rich_text | Stable dedup key (`bs:<ou>:<id>` or `gs:<course>:<id>`) |
+| Source | select | "Brightspace" or "Gradescope" |
+| Status | select | User-managed (Backlog / Todo / Doing / Done) |
+| Link | url | Link back to source |
+| Estimate (hrs) | number | User-managed time estimate |
+| Docs | files | User-managed attachments |
+| Notes | rich_text | User-managed notes |
+
+Only Name, Due, Course, External ID, Source, and Link are written by the sync. The rest are left untouched.
 
 ## Usage
 
 ```bash
 # One-shot sync
-python -m school_sync --once
+uv run school-sync --once
 
-# Watch mode (polls every 30 min)
-python -m school_sync --watch
+# Watch mode (polls on interval, Ctrl+C to stop)
+uv run school-sync --watch
 
 # Single source only
-python -m school_sync --once --source gradescope
-python -m school_sync --once --source brightspace
+uv run school-sync --once --source gradescope
+uv run school-sync --once --source brightspace
 
 # Preview changes without applying
-python -m school_sync --once --dry-run
+uv run school-sync --once --dry-run
 
-# Verbose/debug output
-python -m school_sync --once -v
+# Verbose logging
+uv run school-sync --once -v
 ```
 
-## Configuration
+### Running on a schedule
 
-Copy `.env.example` and adjust as needed. Defaults work for the existing Purdue setup — Notion key is read from `/root/.config/notion/api_key`.
+The recommended approach is a systemd timer:
 
-## Architecture
+```ini
+# /etc/systemd/system/school-sync.service
+[Unit]
+Description=School assignment sync
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/school-sync
+ExecStart=/path/to/uv run school-sync --once
+Environment=TZ=America/Indiana/Indianapolis
+```
+
+```ini
+# /etc/systemd/system/school-sync.timer
+[Unit]
+Description=Run school-sync every 30 min during waking hours
+
+[Timer]
+OnCalendar=*-*-* 08..22:00,30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now school-sync.timer
+```
+
+## Project structure
 
 ```
-sources/gradescope.py   -> gradescope-cli assignments <id>
-sources/brightspace.py  -> gws calendar events list (Brightspace calendar)
-         |
-    models.py           -> normalized Assignment dataclass
-         |
-    state.py            -> SQLite diff (new / due_changed / title_changed / removed)
-         |
-    targets/notion.py   -> idempotent upsert by External ID
-    targets/openclaw.py  -> one batched wake notification
+school-sync/
+├── pyproject.toml              # uv/hatch project config
+├── school_sync/
+│   ├── main.py                 # CLI entry point (--once / --watch)
+│   ├── config.py               # Env-based config with .env loader
+│   ├── models.py               # Assignment and Change dataclasses
+│   ├── state.py                # SQLite state layer and diff engine
+│   ├── sources/
+│   │   ├── gradescope.py       # gradescopeapi library adapter
+│   │   └── brightspace.py      # gws calendar adapter
+│   └── targets/
+│       ├── notion.py           # Notion API upsert (stdlib urllib)
+│       └── openclaw.py         # OpenClaw /hooks/agent webhook
+└── .env.example
 ```
 
-## Notion field mapping
+## Change detection
 
-| Notion Property | Source |
-|---|---|
-| Name | assignment title |
-| Due | due date (ISO 8601) |
-| Course | course label (multi-select) |
-| External ID | `bs:<ou>:<eventId>` or `gs:<courseId>:<assignmentId>` |
-| Source | "Brightspace" or "Gradescope" |
-| Link | source URL |
-| Status | untouched (user-managed) |
-| Estimate (hrs) | untouched (user-managed) |
-| Docs | untouched (future: PDF uploads) |
-| Notes | untouched (user-managed) |
+Each assignment gets a stable external ID:
+- Brightspace: `bs:<organizational_unit>:<calendar_event_id>` (extracted from event description URLs)
+- Gradescope: `gs:<course_id>:<assignment_id>`
+
+On each sync, the current assignment set is compared against SQLite state. Four change types are detected:
+
+| Change | Trigger | Notion action |
+|---|---|---|
+| `new` | External ID not in state | Create page |
+| `due_changed` | Due date differs (minute precision) | Update page |
+| `title_changed` | Title string differs | Update page |
+| `removed` | External ID in state but not in current set | Archive page |
+
+All state updates are committed atomically after Notion changes succeed.
+
+## OpenClaw integration
+
+When changes are detected, a single `POST /hooks/agent` request is sent to the OpenClaw gateway. The payload includes:
+- A human-readable change summary
+- The Notion database ID
+- Page IDs of all changed items
+- Run timestamp
+
+OpenClaw runs an isolated agent turn that summarizes the changes and delivers the message to Telegram. The gateway URL and token are read from `~/.openclaw/openclaw.json` automatically.
+
+## Future work
+
+Hooks are left in `targets/notion.py` for:
+- Downloading assignment PDFs from source
+- Uploading to Google Drive
+- Estimating time per assignment
+- Auto-creating Google Docs from templates
