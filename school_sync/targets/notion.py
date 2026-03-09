@@ -84,9 +84,11 @@ def _build_properties(a: Assignment) -> dict[str, Any]:
 
 def _create_page(api_key: str, db_id: str, a: Assignment) -> str:
     """Create a new page in the Notion database. Returns page ID."""
+    props = _build_properties(a)
+    props["Status"] = {"status": {"name": "Not Started"}}
     body = {
         "parent": {"database_id": db_id},
-        "properties": _build_properties(a),
+        "properties": props,
     }
     result = _request("POST", f"{_BASE}/pages", api_key, body)
     page_id = result["id"]
