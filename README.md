@@ -24,7 +24,7 @@ Brightspace ──(gws calendar)──┘                                  OpenC
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (package manager)
-- [gws](https://github.com/nicholasgasior/gws) authenticated (`gws auth login`)
+- [gws](https://github.com/googleworkspace/cli) authenticated (`gws auth login`)
 - A Gradescope account
 - A Notion integration with access to your target database
 - OpenClaw with webhooks enabled (optional, for notifications)
