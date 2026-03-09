@@ -73,7 +73,7 @@ class Config:
 
         db_path = os.environ.get(
             "SYNC_DB_PATH",
-            str(Path(__file__).parent / "state.db"),
+            str(Path(__file__).resolve().parent.parent / "state.db"),
         )
 
         courses_json = os.environ.get("COURSES_JSON", "")
