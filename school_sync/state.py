@@ -9,6 +9,13 @@ from typing import Sequence
 from .models import Assignment, Change, ChangeType
 
 
+def _is_past_due(due: datetime | None) -> bool:
+    """Return True if the due date is in the past."""
+    if due is None:
+        return False
+    return due < datetime.now(timezone.utc)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assignments (
     external_id TEXT PRIMARY KEY,
@@ -64,6 +71,9 @@ class StateDB:
             old_due = (
                 datetime.fromisoformat(old["due"]) if old["due"] else None
             )
+            # Don't edit assignments that are past due
+            if _is_past_due(old_due):
+                continue
             if a.title != old["title"]:
                 changes.append(
                     Change(ChangeType.TITLE_CHANGED, a, old_title=old["title"])
@@ -75,10 +85,14 @@ class StateDB:
 
         for eid, old in stored.items():
             if eid not in current_map:
+                old_due = datetime.fromisoformat(old["due"]) if old["due"] else None
+                # Don't remove assignments that are past due
+                if _is_past_due(old_due):
+                    continue
                 removed = Assignment(
                     external_id=eid,
                     title=old["title"],
-                    due=datetime.fromisoformat(old["due"]) if old["due"] else None,
+                    due=old_due,
                     course=old["course"],
                     source=old["source"],
                     link=old["link"],
