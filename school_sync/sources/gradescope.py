@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
+import tempfile
 from pathlib import Path
 
 from gradescopeapi.classes.connection import GSConnection
@@ -26,6 +29,33 @@ def _get_connection() -> GSConnection:
     conn = GSConnection()
     conn.login(data["email"], data["password"])
     return conn
+
+
+def _download_pdf(session, course_id: str, assignment_id: str) -> Path | None:
+    """Download the assignment PDF to a temp file, if available. Returns local path."""
+    url = f"https://www.gradescope.com/courses/{course_id}/assignments/{assignment_id}/submissions/new"
+    try:
+        resp = session.get(url, timeout=15)
+        match = re.search(
+            r'(https://production-gradescope-uploads\.s3[^"\'>\s]+\.pdf[^"\'>\s]*)',
+            resp.text,
+        )
+        if not match:
+            return None
+        pdf_url = html.unescape(match.group(1))
+        # Extract filename from URL path
+        fname_match = re.search(r'/([^/?]+\.pdf)', pdf_url, re.IGNORECASE)
+        filename = fname_match.group(1) if fname_match else f"assignment_{assignment_id}.pdf"
+        pdf_resp = session.get(pdf_url, timeout=30)
+        pdf_resp.raise_for_status()
+        tmp = Path(tempfile.gettempdir()) / "school_sync_pdfs"
+        tmp.mkdir(exist_ok=True)
+        out = tmp / filename
+        out.write_bytes(pdf_resp.content)
+        return out
+    except Exception:
+        log.debug("Could not download PDF for assignment %s", assignment_id)
+    return None
 
 
 def _convert(gs_assignment, course: CourseMapping) -> Assignment | None:
@@ -63,6 +93,13 @@ def fetch_all(cfg: Config) -> list[Assignment]:
             gs_assignments = conn.account.get_assignments(course.gradescope_id)
             parsed = [a for gs in gs_assignments if (a := _convert(gs, course))]
             log.info("  -> %d actionable assignments", len(parsed))
+            for a in parsed:
+                aid = a.external_id.rsplit(":", 1)[-1]
+                if aid and aid != "none":
+                    pdf_path = _download_pdf(conn.session, course.gradescope_id, aid)
+                    if pdf_path:
+                        a.pdf_path = pdf_path
+                        log.info("  -> PDF downloaded for %s", a.title)
             all_assignments.extend(parsed)
         except Exception:
             log.exception("Failed to fetch Gradescope for %s", course.course_label)

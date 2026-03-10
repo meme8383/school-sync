@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+*.pdf
 state.db
 .env
 .venv/

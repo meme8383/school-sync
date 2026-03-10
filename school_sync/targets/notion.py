@@ -72,6 +72,7 @@ def _build_properties(a: Assignment) -> dict[str, Any]:
         "External ID": {"rich_text": [{"text": {"content": a.external_id}}]},
         "Source": {"select": {"name": a.source}},
         "Course": {"multi_select": [{"name": a.course}]},
+        "Area": {"select": {"name": "School"}},
     }
     if a.due:
         props["Due"] = {"date": {"start": a.due.isoformat()}}
@@ -79,6 +80,8 @@ def _build_properties(a: Assignment) -> dict[str, Any]:
         props["Due"] = {"date": None}
     if a.link:
         props["Link"] = {"url": a.link}
+    if a.pdf_url:
+        props["Docs"] = {"files": [{"type": "external", "name": "Assignment PDF", "external": {"url": a.pdf_url}}]}
     return props
 
 

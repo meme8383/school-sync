@@ -30,7 +30,10 @@ def _build_message(changes: list[Change]) -> str:
             continue
         lines.append(f"--- {ct.value.upper()} ({len(group)}) ---")
         for ch in group:
-            lines.append(f"  {ch.describe()}")
+            desc = ch.describe()
+            if ch.assignment.pdf_url:
+                desc += " [PDF available in Docs]"
+            lines.append(f"  {desc}")
 
     return "\n".join(lines)
 

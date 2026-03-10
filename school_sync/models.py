@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _ET = ZoneInfo("America/Indiana/Indianapolis")
@@ -26,6 +27,8 @@ class Assignment:
     source: str             # "Brightspace" or "Gradescope"
     link: str | None = None
     source_status: str | None = None  # raw status from source
+    pdf_path: Path | None = None      # temp local path of downloaded PDF
+    pdf_url: str | None = None        # permanent Drive URL after upload
 
     def key(self) -> str:
         return self.external_id

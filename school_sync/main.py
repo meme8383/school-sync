@@ -24,6 +24,7 @@ from .models import Change, ChangeType
 from .state import StateDB
 from .sources import gradescope, brightspace
 from .targets import notion, openclaw
+from . import drive
 
 log = logging.getLogger("school_sync")
 
@@ -70,10 +71,19 @@ def sync_once(cfg: Config, db: StateDB, source_filter: str | None = None, dry_ru
         log.info("Dry run: %d changes would be applied", len(changes))
         return changes
 
-    # 3. Apply to Notion
+    # 3. Upload PDFs to Google Drive
+    for ch in changes:
+        a = ch.assignment
+        if a.pdf_path:
+            try:
+                a.pdf_url = drive.upload_pdf(a.pdf_path, a.course)
+            except Exception:
+                log.exception("Failed to upload PDF to Drive for %s", a.title)
+
+    # 4. Apply to Notion
     page_ids = notion.apply_changes(cfg, changes, db.get_notion_page_id)
 
-    # 4. Update local state (single transaction)
+    # 5. Update local state (single transaction)
     for ch in changes:
         if ch.change_type == ChangeType.REMOVED:
             db.mark_removed(ch.assignment.external_id, commit=False)
@@ -82,7 +92,7 @@ def sync_once(cfg: Config, db: StateDB, source_filter: str | None = None, dry_ru
             db.upsert(ch.assignment, page_id, commit=False)
     db.commit()
 
-    # 5. Notify OpenClaw (one batched message)
+    # 6. Notify OpenClaw (one batched message)
     openclaw.notify(
         changes,
         enabled=cfg.openclaw_enabled,
